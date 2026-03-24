@@ -103,336 +103,189 @@ bool ensure_js_payload_loaded() {
 
   // Fall back to hardcoded JavaScript
   MH_LOG("[execute.inject] /data/youtube/inject.js not found, using hardcoded payload");
-  static const char kHardcodedJs[] = R"JS((function(){
-  if (window.__MH_SPONSORBLOCK_LOADED) { return; }
-  window.__MH_SPONSORBLOCK_LOADED = true;
-
-  function showToast(title, subtitle) {
-    try {
-      var popupAction = {
-        openPopupAction: {
-          popupType: 'TOAST',
-          popup: {
-            overlayToastRenderer: {
-              title: { simpleText: title },
-              subtitle: { simpleText: subtitle }
-            }
-          }
-        }
-      };
-      for (var key in window._yttv) {
-        if (window._yttv[key] && window._yttv[key].instance && window._yttv[key].instance.resolveCommand) {
-          window._yttv[key].instance.resolveCommand(popupAction);
-          break;
-        }
-      }
-    } catch(e) {}
-  }
-
-  var origParse = JSON.parse;
-  JSON.parse = function() {
-    var r = origParse.apply(this, arguments);
-    if (r && typeof r === 'object' && !Array.isArray(r)) {
-      if (r.adPlacements) { delete r.adPlacements; }
-      if (r.playerAds)    { delete r.playerAds; }
-      if (r.adSlots)      { delete r.adSlots; }
-    }
-    return r;
-  };
-
-  window.JSON.parse = JSON.parse;
-  try {
-    for (var key in window._yttv) {
-      if (window._yttv[key] && window._yttv[key].JSON && window._yttv[key].JSON.parse) {
-        window._yttv[key].JSON.parse = JSON.parse;
-      }
-    }
-  } catch(e) {}
-
-  var sponsorSegments = [];
-  var currentVideoId = null;
-  var currentVideo = null;
-  var skipTimeout = null;
-  var skippedMap = {};
-  var dislikeCache = {};
-  var dislikePending = {};
-  var dislikeNode = null;
-  var dislikeObserver = null;
-  var dislikeRenderTimer = null;
-
-  function getVideoId() {
-    try {
-      var href = String(window.location.href || '');
-      var hash = String(window.location.hash || '');
-      var match = href.match(/[?&]v=([^&]+)/) || hash.match(/[?&]v=([^&]+)/);
-      return match ? decodeURIComponent(match[1]) : null;
-    } catch(e) {
-      return null;
-    }
-  }
-
-  function formatCount(n) {
-    if (typeof n !== 'number' || isNaN(n)) return '';
-    if (n < 1000) return String(n);
-    if (n < 1000000) {
-      var k = n / 1000;
-      return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'K';
-    }
-    var m = n / 1000000;
-    return (m >= 100 ? Math.round(m) : Math.round(m * 10) / 10) + 'M';
-  }
-
-  function findLikeButton() {
-    var nodes = document.querySelectorAll('button, [role="button"], ytlr-like-button-renderer, ytlr-toggle-button-renderer');
-    for (var i = 0; i < nodes.length; i++) {
-      var node = nodes[i];
-      var label = '';
-      try {
-        label = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').toLowerCase();
-      } catch(e) {}
-      if (label.indexOf('like') !== -1 && label.indexOf('dislike') === -1) {
-        return node;
-      }
-    }
-    return null;
-  }
-
-  function renderDislikeCount(videoId) {
-    if (!videoId || !dislikeCache.hasOwnProperty(videoId)) return;
-
-    var likeButton = findLikeButton();
-    if (!likeButton || !likeButton.parentNode) return;
-
-    if (!dislikeNode || !dislikeNode.parentNode) {
-      dislikeNode = document.createElement('span');
-      dislikeNode.className = 'mh-dislike-count';
-      dislikeNode.style.display = 'inline-block';
-      dislikeNode.style.pointerEvents = 'none';
-      dislikeNode.style.whiteSpace = 'nowrap';
-      dislikeNode.style.verticalAlign = 'middle';
-      dislikeNode.style.marginLeft = '14px';
-    }
-
-    try {
-      var s = window.getComputedStyle(likeButton);
-      dislikeNode.style.color = s.color;
-      dislikeNode.style.fontFamily = s.fontFamily;
-      dislikeNode.style.fontSize = s.fontSize;
-      dislikeNode.style.fontWeight = s.fontWeight;
-      dislikeNode.style.lineHeight = s.lineHeight;
-      dislikeNode.style.letterSpacing = s.letterSpacing;
-      dislikeNode.style.opacity = s.opacity || '1';
-    } catch(e) {}
-
-    dislikeNode.textContent = 'Dislike ' + formatCount(dislikeCache[videoId]);
-
-    if (likeButton.nextSibling !== dislikeNode) {
-      likeButton.parentNode.insertBefore(dislikeNode, likeButton.nextSibling);
-    }
-  }
-
-  function queueDislikeRender() {
-    if (dislikeRenderTimer) return;
-    dislikeRenderTimer = setTimeout(function() {
-      dislikeRenderTimer = null;
-      if (currentVideoId) {
-        renderDislikeCount(currentVideoId);
-      }
-    }, 150);
-  }
-
-  function watchDislikeUi() {
-    if (dislikeObserver || !window.MutationObserver) return;
-    dislikeObserver = new MutationObserver(function() {
-      queueDislikeRender();
-    });
-    dislikeObserver.observe(document.documentElement || document.body, {
-      childList: true,
-      subtree: true
-    });
-  }
-
-  function loadDislikeCount(videoId) {
-    if (!videoId) return;
-    if (dislikeCache.hasOwnProperty(videoId)) {
-      queueDislikeRender();
-      return;
-    }
-    if (dislikePending[videoId]) return;
-
-    dislikePending[videoId] = true;
-
-    var tryPort = function(port) {
-      try {
-        var xhr = new XMLHttpRequest();
-        var url = 'http://127.0.0.1:' + port + '/dislike/' + encodeURIComponent(videoId);
-        xhr.timeout = 4000;
-        xhr.onload = function() {
-          delete dislikePending[videoId];
-          if (xhr.status !== 200) return;
-          try {
-            var data = origParse(xhr.responseText);
-            dislikeCache[videoId] = data && typeof data.dislikes === 'number' ? data.dislikes : 0;
-            queueDislikeRender();
-          } catch(e) {}
-        };
-        xhr.onerror = function() {
-          if (port < 4050) {
-            tryPort(port + 1);
-          } else {
-            delete dislikePending[videoId];
-          }
-        };
-        xhr.ontimeout = function() {
-          if (port < 4050) {
-            tryPort(port + 1);
-          } else {
-            delete dislikePending[videoId];
-          }
-        };
-        xhr.open('GET', url, true);
-        xhr.send();
-      } catch(e) {
-        if (port < 4050) {
-          tryPort(port + 1);
-        } else {
-          delete dislikePending[videoId];
-        }
-      }
-    };
-
-    tryPort(4040);
-  }
-
-  function loadSponsorBlock(videoId) {
-    if (!videoId) return;
-    var tryPort = function(port) {
-      try {
-        var xhr = new XMLHttpRequest();
-        var url = 'http://127.0.0.1:' + port + '/' + encodeURIComponent(videoId);
-        xhr.timeout = 2000;
-        xhr.onload = function() {
-          if (xhr.status === 200) {
-            try {
-              var data = origParse(xhr.responseText);
-              if (Array.isArray(data) && data.length > 0) {
-                sponsorSegments = data;
-                showToast('SponsorBlock', data.length + ' segment(s) found');
-                scheduleSkip();
-              } else {
-                sponsorSegments = [];
-              }
-            } catch(e) {}
-          }
-        };
-        xhr.onerror = function() { if (port < 4050) tryPort(port + 1); };
-        xhr.ontimeout = function() { if (port < 4050) tryPort(port + 1); };
-        xhr.open('GET', url, true);
-        xhr.send();
-      } catch(e) {
-        if (port < 4050) tryPort(port + 1);
-      }
-    };
-    tryPort(4040);
-  }
-
-  function scheduleSkip() {
-    if (skipTimeout) {
-      clearTimeout(skipTimeout);
-      skipTimeout = null;
-    }
-    if (!currentVideo || currentVideo.paused || sponsorSegments.length === 0) return;
-    var now = currentVideo.currentTime;
-    var nextSegments = [];
-    for (var i = 0; i < sponsorSegments.length; i++) {
-      var seg = sponsorSegments[i].segment;
-      if (seg[0] > now - 0.3 && seg[1] > now - 0.3) {
-        nextSegments.push(sponsorSegments[i]);
-      }
-    }
-    nextSegments.sort(function(a, b) { return a.segment[0] - b.segment[0]; });
-    if (nextSegments.length === 0) return;
-    var segment = nextSegments[0];
-    var start = segment.segment[0];
-    var end = segment.segment[1];
-    var delay = (start - now) * 1000;
-    skipTimeout = setTimeout(function() {
-      if (!currentVideo || currentVideo.paused) return;
-      var uuid = segment.UUID || (segment.category + '_' + start + '_' + end);
-      var prev = skippedMap[uuid];
-      if (prev) {
-        prev.count++;
-        prev.lastSkipped = Date.now();
-        if (prev.lastSkipped - prev.firstSkipped < 1000) {
-          return;
-        }
-      } else {
-        skippedMap[uuid] = { count: 1, firstSkipped: Date.now(), lastSkipped: Date.now() };
-      }
-      showToast('Segment Skipped', segment.category + ' (' + Math.floor(end - start) + 's)');
-      if (currentVideo.duration - end < 1) {
-        currentVideo.currentTime = end - 1;
-      } else {
-        currentVideo.currentTime = end;
-      }
-      scheduleSkip();
-    }, Math.max(delay, 0));
-  }
-
-  function onScheduleSkip() { scheduleSkip(); }
-
-  function detachVideo() {
-    if (currentVideo) {
-      currentVideo.removeEventListener('play', onScheduleSkip);
-      currentVideo.removeEventListener('pause', onScheduleSkip);
-      currentVideo.removeEventListener('timeupdate', onScheduleSkip);
-      currentVideo = null;
-    }
-    if (skipTimeout) {
-      clearTimeout(skipTimeout);
-      skipTimeout = null;
-    }
-  }
-
-  function attachVideo() {
-    detachVideo();
-    var video = document.querySelector('video');
-    if (!video) {
-      setTimeout(attachVideo, 200);
-      return;
-    }
-    currentVideo = video;
-    currentVideo.addEventListener('play', onScheduleSkip);
-    currentVideo.addEventListener('pause', onScheduleSkip);
-    currentVideo.addEventListener('timeupdate', onScheduleSkip);
-  }
-
-  function onVideoChange() {
-    var videoId = getVideoId();
-    if (videoId && videoId !== currentVideoId) {
-      currentVideoId = videoId;
-      sponsorSegments = [];
-      skippedMap = {};
-      if (dislikeNode && dislikeNode.parentNode) {
-        dislikeNode.parentNode.removeChild(dislikeNode);
-      }
-      dislikeNode = null;
-      attachVideo();
-      loadSponsorBlock(videoId);
-      loadDislikeCount(videoId);
-      queueDislikeRender();
-    }
-  }
-
-  watchDislikeUi();
-  window.addEventListener('hashchange', onVideoChange, false);
-  onVideoChange();
-
-  setTimeout(function() {
-    showToast('Ad Block + SponsorBlock Enabled!', 'by earthonion');
-  }, 2000);
-})();
-)JS";
+  static const char kHardcodedJs[] =
+      "(function(){\n"
+      "  if (window.__MH_SPONSORBLOCK_LOADED) { return; }\n"
+      "  window.__MH_SPONSORBLOCK_LOADED = true;\n"
+      "\n"
+      "  function showToast(title, subtitle) {\n"
+      "    try {\n"
+      "      var popupAction = {\n"
+      "        openPopupAction: {\n"
+      "          popupType: 'TOAST',\n"
+      "          popup: {\n"
+      "            overlayToastRenderer: {\n"
+      "              title: { simpleText: title },\n"
+      "              subtitle: { simpleText: subtitle }\n"
+      "            }\n"
+      "          }\n"
+      "        }\n"
+      "      };\n"
+      "      for (var key in window._yttv) {\n"
+      "        if (window._yttv[key] && window._yttv[key].instance && window._yttv[key].instance.resolveCommand) {\n"
+      "          window._yttv[key].instance.resolveCommand(popupAction);\n"
+      "          break;\n"
+      "        }\n"
+      "      }\n"
+      "    } catch(e) {}\n"
+      "  }\n"
+      "\n"
+      "  var origParse = JSON.parse;\n"
+      "  JSON.parse = function() {\n"
+      "    var r = origParse.apply(this, arguments);\n"
+      "    if (r && typeof r === 'object' && !Array.isArray(r)) {\n"
+      "      if (r.adPlacements) { delete r.adPlacements; }\n"
+      "      if (r.playerAds)    { delete r.playerAds; }\n"
+      "      if (r.adSlots)      { delete r.adSlots; }\n"
+      "    }\n"
+      "    return r;\n"
+      "  };\n"
+      "\n"
+      "  window.JSON.parse = JSON.parse;\n"
+      "  try {\n"
+      "    for (var key in window._yttv) {\n"
+      "      if (window._yttv[key] && window._yttv[key].JSON && window._yttv[key].JSON.parse) {\n"
+      "        window._yttv[key].JSON.parse = JSON.parse;\n"
+      "      }\n"
+      "    }\n"
+      "  } catch(e) {}\n"
+      "\n"
+      "  var sponsorSegments = [];\n"
+      "  var currentVideoId = null;\n"
+      "  var currentVideo = null;\n"
+      "  var skipTimeout = null;\n"
+      "  var skippedMap = {};\n"
+      "\n"
+      "  function getVideoId() {\n"
+      "    try {\n"
+      "      var match = window.location.hash.match(/[?&]v=([^&]+)/);\n"
+      "      return match ? match[1] : null;\n"
+      "    } catch(e) {\n"
+      "      return null;\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  function loadSponsorBlock(videoId) {\n"
+      "    if (!videoId) return;\n"
+      "    var tryPort = function(port) {\n"
+      "      try {\n"
+      "        var xhr = new XMLHttpRequest();\n"
+      "        var url = 'http://127.0.0.1:' + port + '/' + encodeURIComponent(videoId);\n"
+      "        xhr.timeout = 2000;\n"
+      "        xhr.onload = function() {\n"
+      "          if (xhr.status === 200) {\n"
+      "            try {\n"
+      "              var data = origParse(xhr.responseText);\n"
+      "              if (Array.isArray(data) && data.length > 0) {\n"
+      "                sponsorSegments = data;\n"
+      "                showToast('SponsorBlock', data.length + ' segment(s) found');\n"
+      "                scheduleSkip();\n"
+      "              } else {\n"
+      "                sponsorSegments = [];\n"
+      "              }\n"
+      "            } catch(e) {}\n"
+      "          }\n"
+      "        };\n"
+      "        xhr.onerror = function() { if (port < 4050) tryPort(port + 1); };\n"
+      "        xhr.ontimeout = function() { if (port < 4050) tryPort(port + 1); };\n"
+      "        xhr.open('GET', url, true);\n"
+      "        xhr.send();\n"
+      "      } catch(e) {\n"
+      "        if (port < 4050) tryPort(port + 1);\n"
+      "      }\n"
+      "    };\n"
+      "    tryPort(4040);\n"
+      "  }\n"
+      "\n"
+      "  function scheduleSkip() {\n"
+      "    if (skipTimeout) {\n"
+      "      clearTimeout(skipTimeout);\n"
+      "      skipTimeout = null;\n"
+      "    }\n"
+      "    if (!currentVideo || currentVideo.paused || sponsorSegments.length === 0) return;\n"
+      "    var now = currentVideo.currentTime;\n"
+      "    var nextSegments = [];\n"
+      "    for (var i = 0; i < sponsorSegments.length; i++) {\n"
+      "      var seg = sponsorSegments[i].segment;\n"
+      "      if (seg[0] > now - 0.3 && seg[1] > now - 0.3) {\n"
+      "        nextSegments.push(sponsorSegments[i]);\n"
+      "      }\n"
+      "    }\n"
+      "    nextSegments.sort(function(a, b) { return a.segment[0] - b.segment[0]; });\n"
+      "    if (nextSegments.length === 0) return;\n"
+      "    var segment = nextSegments[0];\n"
+      "    var start = segment.segment[0];\n"
+      "    var end = segment.segment[1];\n"
+      "    var delay = (start - now) * 1000;\n"
+      "    skipTimeout = setTimeout(function() {\n"
+      "      if (!currentVideo || currentVideo.paused) return;\n"
+      "      var uuid = segment.UUID || (segment.category + '_' + start + '_' + end);\n"
+      "      var prev = skippedMap[uuid];\n"
+      "      if (prev) {\n"
+      "        prev.count++;\n"
+      "        prev.lastSkipped = Date.now();\n"
+      "        if (prev.lastSkipped - prev.firstSkipped < 1000) {\n"
+      "          return;\n"
+      "        }\n"
+      "      } else {\n"
+      "        skippedMap[uuid] = { count: 1, firstSkipped: Date.now(), lastSkipped: Date.now() };\n"
+      "      }\n"
+      "      showToast('Segment Skipped', segment.category + ' (' + Math.floor(end - start) + 's)');\n"
+      "      if (currentVideo.duration - end < 1) {\n"
+      "        currentVideo.currentTime = end - 1;\n"
+      "      } else {\n"
+      "        currentVideo.currentTime = end;\n"
+      "      }\n"
+      "      scheduleSkip();\n"
+      "    }, Math.max(delay, 0));\n"
+      "  }\n"
+      "\n"
+      "  function onScheduleSkip() { scheduleSkip(); }\n"
+      "\n"
+      "  function detachVideo() {\n"
+      "    if (currentVideo) {\n"
+      "      currentVideo.removeEventListener('play', onScheduleSkip);\n"
+      "      currentVideo.removeEventListener('pause', onScheduleSkip);\n"
+      "      currentVideo.removeEventListener('timeupdate', onScheduleSkip);\n"
+      "      currentVideo = null;\n"
+      "    }\n"
+      "    if (skipTimeout) {\n"
+      "      clearTimeout(skipTimeout);\n"
+      "      skipTimeout = null;\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  function attachVideo() {\n"
+      "    detachVideo();\n"
+      "    var video = document.querySelector('video');\n"
+      "    if (!video) {\n"
+      "      setTimeout(attachVideo, 200);\n"
+      "      return;\n"
+      "    }\n"
+      "    currentVideo = video;\n"
+      "    currentVideo.addEventListener('play', onScheduleSkip);\n"
+      "    currentVideo.addEventListener('pause', onScheduleSkip);\n"
+      "    currentVideo.addEventListener('timeupdate', onScheduleSkip);\n"
+      "  }\n"
+      "\n"
+      "  function onVideoChange() {\n"
+      "    var videoId = getVideoId();\n"
+      "    if (videoId && videoId !== currentVideoId) {\n"
+      "      currentVideoId = videoId;\n"
+      "      sponsorSegments = [];\n"
+      "      skippedMap = {};\n"
+      "      attachVideo();\n"
+      "      loadSponsorBlock(videoId);\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  window.addEventListener('hashchange', onVideoChange, false);\n"
+      "  onVideoChange();\n"
+      "\n"
+      "  setTimeout(function() {\n"
+      "    showToast('Ad Block + SponsorBlock Enabled!', 'by earthonion');\n"
+      "  }, 2000);\n"
+      "})();\n";
 
   g_js_payload.assign(kHardcodedJs, kHardcodedJs + sizeof(kHardcodedJs) - 1);
   g_js_payload_loaded = true;

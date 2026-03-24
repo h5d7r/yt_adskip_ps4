@@ -2,6 +2,7 @@
   if (window.__MH_SPONSORBLOCK_LOADED) { return; }
   window.__MH_SPONSORBLOCK_LOADED = true;
 
+  // ── Toast helper (unchanged) ──────────────────────────────────────
   function showToast(title, subtitle) {
     try {
       var popupAction = {
@@ -24,6 +25,9 @@
     } catch(e) {}
   }
 
+  // ── 1. JSON.parse monkey-patch (from TizenTube) ──────────────────
+  // Intercept YouTube API responses and strip ad data before rendering.
+  // Uses delete (not empty array) so downstream truthiness checks work.
   var origParse = JSON.parse;
   JSON.parse = function() {
     var r = origParse.apply(this, arguments);
@@ -35,6 +39,7 @@
     return r;
   };
 
+  // Patch across all YouTube TV internal contexts (once, like TizenTube)
   window.JSON.parse = JSON.parse;
   try {
     for (var key in window._yttv) {
@@ -44,159 +49,20 @@
     }
   } catch(e) {}
 
+  // ── 2. SponsorBlock — event-driven segment skipping ──────────────
   var sponsorSegments = [];
   var currentVideoId = null;
   var currentVideo = null;
   var skipTimeout = null;
-  var skippedMap = {};
-  var dislikeCache = {};
-  var dislikePending = {};
-  var dislikeNode = null;
-  var dislikeObserver = null;
-  var dislikeRenderTimer = null;
+  var skippedMap = {};  // UUID -> { count, firstSkipped, lastSkipped }
 
   function getVideoId() {
     try {
-      var href = String(window.location.href || '');
-      var hash = String(window.location.hash || '');
-      var match = href.match(/[?&]v=([^&]+)/) || hash.match(/[?&]v=([^&]+)/);
-      return match ? decodeURIComponent(match[1]) : null;
+      var match = window.location.hash.match(/[?&]v=([^&]+)/);
+      return match ? match[1] : null;
     } catch(e) {
       return null;
     }
-  }
-
-  function formatCount(n) {
-    if (typeof n !== 'number' || isNaN(n)) return '';
-    if (n < 1000) return String(n);
-    if (n < 1000000) {
-      var k = n / 1000;
-      return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'K';
-    }
-    var m = n / 1000000;
-    return (m >= 100 ? Math.round(m) : Math.round(m * 10) / 10) + 'M';
-  }
-
-  function findLikeButton() {
-    var nodes = document.querySelectorAll('button, [role="button"], ytlr-like-button-renderer, ytlr-toggle-button-renderer');
-    for (var i = 0; i < nodes.length; i++) {
-      var node = nodes[i];
-      var label = '';
-      try {
-        label = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').toLowerCase();
-      } catch(e) {}
-      if (label.indexOf('like') !== -1 && label.indexOf('dislike') === -1) {
-        return node;
-      }
-    }
-    return null;
-  }
-
-  function renderDislikeCount(videoId) {
-    if (!videoId || !dislikeCache.hasOwnProperty(videoId)) return;
-
-    var likeButton = findLikeButton();
-    if (!likeButton || !likeButton.parentNode) return;
-
-    if (!dislikeNode || !dislikeNode.parentNode) {
-      dislikeNode = document.createElement('span');
-      dislikeNode.className = 'mh-dislike-count';
-      dislikeNode.style.display = 'inline-block';
-      dislikeNode.style.pointerEvents = 'none';
-      dislikeNode.style.whiteSpace = 'nowrap';
-      dislikeNode.style.verticalAlign = 'middle';
-      dislikeNode.style.marginLeft = '14px';
-    }
-
-    try {
-      var s = window.getComputedStyle(likeButton);
-      dislikeNode.style.color = s.color;
-      dislikeNode.style.fontFamily = s.fontFamily;
-      dislikeNode.style.fontSize = s.fontSize;
-      dislikeNode.style.fontWeight = s.fontWeight;
-      dislikeNode.style.lineHeight = s.lineHeight;
-      dislikeNode.style.letterSpacing = s.letterSpacing;
-      dislikeNode.style.opacity = s.opacity || '1';
-    } catch(e) {}
-
-    dislikeNode.textContent = 'Dislike ' + formatCount(dislikeCache[videoId]);
-
-    if (likeButton.nextSibling !== dislikeNode) {
-      likeButton.parentNode.insertBefore(dislikeNode, likeButton.nextSibling);
-    }
-  }
-
-  function queueDislikeRender() {
-    if (dislikeRenderTimer) return;
-    dislikeRenderTimer = setTimeout(function() {
-      dislikeRenderTimer = null;
-      if (currentVideoId) {
-        renderDislikeCount(currentVideoId);
-      }
-    }, 150);
-  }
-
-  function watchDislikeUi() {
-    if (dislikeObserver || !window.MutationObserver) return;
-    dislikeObserver = new MutationObserver(function() {
-      queueDislikeRender();
-    });
-    dislikeObserver.observe(document.documentElement || document.body, {
-      childList: true,
-      subtree: true
-    });
-  }
-
-  function loadDislikeCount(videoId) {
-    if (!videoId) return;
-    if (dislikeCache.hasOwnProperty(videoId)) {
-      queueDislikeRender();
-      return;
-    }
-    if (dislikePending[videoId]) return;
-
-    dislikePending[videoId] = true;
-
-    var tryPort = function(port) {
-      try {
-        var xhr = new XMLHttpRequest();
-        var url = 'http://127.0.0.1:' + port + '/dislike/' + encodeURIComponent(videoId);
-        xhr.timeout = 4000;
-        xhr.onload = function() {
-          delete dislikePending[videoId];
-          if (xhr.status !== 200) return;
-          try {
-            var data = origParse(xhr.responseText);
-            dislikeCache[videoId] = data && typeof data.dislikes === 'number' ? data.dislikes : 0;
-            queueDislikeRender();
-          } catch(e) {}
-        };
-        xhr.onerror = function() {
-          if (port < 4050) {
-            tryPort(port + 1);
-          } else {
-            delete dislikePending[videoId];
-          }
-        };
-        xhr.ontimeout = function() {
-          if (port < 4050) {
-            tryPort(port + 1);
-          } else {
-            delete dislikePending[videoId];
-          }
-        };
-        xhr.open('GET', url, true);
-        xhr.send();
-      } catch(e) {
-        if (port < 4050) {
-          tryPort(port + 1);
-        } else {
-          delete dislikePending[videoId];
-        }
-      }
-    };
-
-    tryPort(4040);
   }
 
   function loadSponsorBlock(videoId) {
@@ -213,6 +79,7 @@
               if (Array.isArray(data) && data.length > 0) {
                 sponsorSegments = data;
                 showToast('SponsorBlock', data.length + ' segment(s) found');
+                // Kick off event-driven skipping now that segments are loaded
                 scheduleSkip();
               } else {
                 sponsorSegments = [];
@@ -231,13 +98,18 @@
     tryPort(4040);
   }
 
+  // Event-driven skip scheduling (adapted from TizenTube)
   function scheduleSkip() {
     if (skipTimeout) {
       clearTimeout(skipTimeout);
       skipTimeout = null;
     }
+
     if (!currentVideo || currentVideo.paused || sponsorSegments.length === 0) return;
+
     var now = currentVideo.currentTime;
+
+    // Find the next segment that hasn't been fully passed yet
     var nextSegments = [];
     for (var i = 0; i < sponsorSegments.length; i++) {
       var seg = sponsorSegments[i].segment;
@@ -246,36 +118,51 @@
       }
     }
     nextSegments.sort(function(a, b) { return a.segment[0] - b.segment[0]; });
+
     if (nextSegments.length === 0) return;
+
     var segment = nextSegments[0];
     var start = segment.segment[0];
     var end = segment.segment[1];
     var delay = (start - now) * 1000;
+
     skipTimeout = setTimeout(function() {
       if (!currentVideo || currentVideo.paused) return;
+
+      // Infinite-loop protection (from TizenTube): if we've skipped
+      // the same segment multiple times within 1 second, stop.
       var uuid = segment.UUID || (segment.category + '_' + start + '_' + end);
       var prev = skippedMap[uuid];
       if (prev) {
         prev.count++;
         prev.lastSkipped = Date.now();
         if (prev.lastSkipped - prev.firstSkipped < 1000) {
-          return;
+          return; // likely an infinite skip loop, bail out
         }
       } else {
         skippedMap[uuid] = { count: 1, firstSkipped: Date.now(), lastSkipped: Date.now() };
       }
-      showToast('Segment Skipped', segment.category + ' (' + Math.floor(end - start) + 's)');
+
+      var skipName = segment.category;
+      showToast('Segment Skipped', skipName + ' (' + Math.floor(end - start) + 's)');
+
+      // Avoid seeking to the very end of the video
       if (currentVideo.duration - end < 1) {
         currentVideo.currentTime = end - 1;
       } else {
         currentVideo.currentTime = end;
       }
+
+      // Schedule the next segment
       scheduleSkip();
     }, Math.max(delay, 0));
   }
 
-  function onScheduleSkip() { scheduleSkip(); }
+  function onScheduleSkip() {
+    scheduleSkip();
+  }
 
+  // ── 3. Video attachment & cleanup ─────────────────────────────────
   function detachVideo() {
     if (currentVideo) {
       currentVideo.removeEventListener('play', onScheduleSkip);
@@ -302,28 +189,74 @@
     currentVideo.addEventListener('timeupdate', onScheduleSkip);
   }
 
+  // ── 4. Video change detection via hashchange event ────────────────
   function onVideoChange() {
     var videoId = getVideoId();
     if (videoId && videoId !== currentVideoId) {
       currentVideoId = videoId;
       sponsorSegments = [];
       skippedMap = {};
-      if (dislikeNode && dislikeNode.parentNode) {
-        dislikeNode.parentNode.removeChild(dislikeNode);
-      }
-      dislikeNode = null;
       attachVideo();
       loadSponsorBlock(videoId);
-      loadDislikeCount(videoId);
-      queueDislikeRender();
     }
   }
 
-  watchDislikeUi();
   window.addEventListener('hashchange', onVideoChange, false);
+
+  // Initial check
   onVideoChange();
 
   setTimeout(function() {
     showToast('Ad Block + SponsorBlock Enabled!', 'by earthonion');
   }, 2000);
+
+  (function() {
+    var _ryd_last = '';
+
+    function injectDislikeUI(likes_s, dislikes_s) {
+      var existing = document.getElementById('_ryd_label');
+      if (existing) {
+        existing.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
+        return;
+      }
+      var likeBtn = document.querySelector('ytd-toggle-button-renderer');
+      if (!likeBtn) return;
+      var label = document.createElement('span');
+      label.id = '_ryd_label';
+      label.style.cssText = 'font-size:inherit;margin-left:8px;opacity:0.9;';
+      label.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
+      likeBtn.appendChild(label);
+    }
+
+    function fetchRYD(videoId) {
+      if (!videoId || videoId === _ryd_last) return;
+      _ryd_last = videoId;
+      var el = document.getElementById('_ryd_label');
+      if (el) el.remove();
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'http://127.0.0.1:4040/ryd?videoId=' + videoId, true);
+        xhr.timeout = 2000;
+        xhr.onload = function() {
+          try {
+            var d = origParse(xhr.responseText);
+            if (d.l && d.d) injectDislikeUI(d.l, d.d);
+          } catch(e) {}
+        };
+        xhr.send();
+      } catch(e) {}
+    }
+
+    var _origOnVideoChange = onVideoChange;
+    onVideoChange = function() {
+      _origOnVideoChange();
+      fetchRYD(getVideoId());
+    };
+
+    window.addEventListener('hashchange', function() {
+      fetchRYD(getVideoId());
+    }, false);
+
+    fetchRYD(getVideoId());
+  })();
 })();
