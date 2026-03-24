@@ -240,7 +240,7 @@
         xhr.onload = function() {
           try {
             var d = origParse(xhr.responseText);
-            if (d.l && d.d) injectDislikeUI(d.l, d.d);
+            if (d.l !== undefined && d.d !== undefined) injectDislikeUI(d.l, d.d);
           } catch(e) {}
         };
         xhr.send();
