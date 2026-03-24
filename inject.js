@@ -209,4 +209,54 @@
   setTimeout(function() {
     showToast('Ad Block + SponsorBlock Enabled!', 'by earthonion');
   }, 2000);
+
+  (function() {
+    var _ryd_last = '';
+
+    function injectDislikeUI(likes_s, dislikes_s) {
+      var existing = document.getElementById('_ryd_label');
+      if (existing) {
+        existing.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
+        return;
+      }
+      var likeBtn = document.querySelector('ytd-toggle-button-renderer');
+      if (!likeBtn) return;
+      var label = document.createElement('span');
+      label.id = '_ryd_label';
+      label.style.cssText = 'font-size:inherit;margin-left:8px;opacity:0.9;';
+      label.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
+      likeBtn.appendChild(label);
+    }
+
+    function fetchRYD(videoId) {
+      if (!videoId || videoId === _ryd_last) return;
+      _ryd_last = videoId;
+      var el = document.getElementById('_ryd_label');
+      if (el) el.remove();
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'http://127.0.0.1:4040/ryd?videoId=' + videoId, true);
+        xhr.timeout = 2000;
+        xhr.onload = function() {
+          try {
+            var d = origParse(xhr.responseText);
+            if (d.l && d.d) injectDislikeUI(d.l, d.d);
+          } catch(e) {}
+        };
+        xhr.send();
+      } catch(e) {}
+    }
+
+    var _origOnVideoChange = onVideoChange;
+    onVideoChange = function() {
+      _origOnVideoChange();
+      fetchRYD(getVideoId());
+    };
+
+    window.addEventListener('hashchange', function() {
+      fetchRYD(getVideoId());
+    }, false);
+
+    fetchRYD(getVideoId());
+  })();
 })();

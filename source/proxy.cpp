@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include "dislike_cache.h"
 // Hide broken stubs before including Http.h
 #define sceHttpSetAutoRedirect sceHttpSetAutoRedirect_stub
 #define sceHttpSetRecvTimeOut sceHttpSetRecvTimeOut_stub
@@ -203,33 +204,66 @@ static void handle_client(OrbisNetId client_sock) {
         return;
     }
 
-    char video_id[32] = {0};
-    sscanf(get_line, "GET /%31s HTTP", video_id);
+    char path[64] = {0};
+    sscanf(get_line, "GET /%63s HTTP", path);
 
-    PROXY_LOG("Video ID: %s", video_id);
+    PROXY_LOG("Path: %s", path);
 
-    // Fetch from SponsorBlock
-    char sb_response[4096] = {0};
-    bool success = fetch_sponsorblock(video_id, sb_response, sizeof(sb_response));
+    if (strncmp(path, "ryd?", 4) == 0) {
+        const char* vid = strstr(path, "videoId=");
+        if (vid) {
+            vid += 8;
+            char video_id[16] = {0};
+            strncpy(video_id, vid, 15);
 
-    if (success) {
-        // Send HTTP response
-        snprintf(response_buf, sizeof(response_buf),
-                 "HTTP/1.1 200 OK\r\n"
-                 "Content-Type: application/json\r\n"
-                 "Access-Control-Allow-Origin: *\r\n"
-                 "Content-Length: %zu\r\n"
-                 "\r\n"
-                 "%s",
-                 strlen(sb_response), sb_response);
+            char likes_s[16] = {}, dislikes_s[16] = {};
+            DislikeData d = {};
+            if (ryd_fetch(video_id, &d)) {
+                ryd_format_count(d.likes,    likes_s,    sizeof(likes_s));
+                ryd_format_count(d.dislikes, dislikes_s, sizeof(dislikes_s));
+                char body[64];
+                int blen = snprintf(body, sizeof(body),
+                    "{\"l\":\"%s\",\"d\":\"%s\"}", likes_s, dislikes_s);
+                snprintf(response_buf, sizeof(response_buf),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
+                    blen, body);
+            } else {
+                snprintf(response_buf, sizeof(response_buf),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    "Access-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\n{}");
+            }
+        } else {
+            snprintf(response_buf, sizeof(response_buf),
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+        }
     } else {
-        snprintf(response_buf, sizeof(response_buf),
-                 "HTTP/1.1 404 Not Found\r\n"
-                 "Content-Type: application/json\r\n"
-                 "Access-Control-Allow-Origin: *\r\n"
-                 "Content-Length: 2\r\n"
-                 "\r\n"
-                 "[]");
+        char video_id[32] = {0};
+        strncpy(video_id, path, 31);
+
+        PROXY_LOG("Video ID: %s", video_id);
+
+        char sb_response[4096] = {0};
+        bool success = fetch_sponsorblock(video_id, sb_response, sizeof(sb_response));
+
+        if (success) {
+            snprintf(response_buf, sizeof(response_buf),
+                     "HTTP/1.1 200 OK\r\n"
+                     "Content-Type: application/json\r\n"
+                     "Access-Control-Allow-Origin: *\r\n"
+                     "Content-Length: %zu\r\n"
+                     "\r\n"
+                     "%s",
+                     strlen(sb_response), sb_response);
+        } else {
+            snprintf(response_buf, sizeof(response_buf),
+                     "HTTP/1.1 404 Not Found\r\n"
+                     "Content-Type: application/json\r\n"
+                     "Access-Control-Allow-Origin: *\r\n"
+                     "Content-Length: 2\r\n"
+                     "\r\n"
+                     "[]");
+        }
     }
 
     sceNetSend(client_sock, response_buf, strlen(response_buf), 0);
