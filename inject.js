@@ -219,13 +219,13 @@
         existing.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
         return;
       }
-      var likeBtn = document.querySelector('ytd-toggle-button-renderer');
-      if (!likeBtn) return;
-      var label = document.createElement('span');
+      var label = document.createElement('div');
       label.id = '_ryd_label';
-      label.style.cssText = 'font-size:inherit;margin-left:8px;opacity:0.9;';
+      label.style.cssText = 'position:fixed;bottom:120px;left:50%;transform:translateX(-50%);' +
+        'background:rgba(0,0,0,0.75);color:#fff;font-size:28px;padding:10px 24px;' +
+        'border-radius:12px;z-index:99999;pointer-events:none;text-align:center;';
       label.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
-      likeBtn.appendChild(label);
+      document.body.appendChild(label);
     }
 
     function fetchRYD(videoId) {
@@ -240,7 +240,7 @@
         xhr.onload = function() {
           try {
             var d = origParse(xhr.responseText);
-            if (d.l && d.d) injectDislikeUI(d.l, d.d);
+            if (d.l !== undefined && d.d !== undefined) injectDislikeUI(d.l, d.d);
           } catch(e) {}
         };
         xhr.send();
