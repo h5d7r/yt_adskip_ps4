@@ -179,6 +179,88 @@ static bool fetch_sponsorblock(const char* video_id, char* response_buf, size_t 
     return success;
 }
 
+static bool fetch_dislikes(const char* video_id, char* response_buf, size_t buf_size) {
+    char url[512];
+    snprintf(url, sizeof(url),
+             "https://returnyoutubedislikeapi.com/votes?videoId=%s",
+             video_id);
+
+    PROXY_LOG("Fetching: %s", url);
+
+    int32_t tmpl_id = sceHttpCreateTemplate(g_http_ctx_id, "ReturnYouTubeDislike-PS4/1.0", 1, 0);
+    if (tmpl_id < 0) {
+        PROXY_LOG("sceHttpCreateTemplate failed: 0x%08X", tmpl_id);
+        return false;
+    }
+
+    sceHttpsSetSslCallback(tmpl_id, ssl_callback, NULL);
+    sceHttpSetAutoRedirect(tmpl_id, 1);
+    sceHttpSetResponseHeaderMaxSize(tmpl_id, 16 * 1024);
+    sceHttpSetResolveTimeOut(tmpl_id, 10 * 1000000);
+    sceHttpSetConnectTimeOut(tmpl_id, 10 * 1000000);
+    sceHttpSetSendTimeOut(tmpl_id, 10 * 1000000);
+    sceHttpSetRecvTimeOut(tmpl_id, 10 * 1000000);
+
+    int32_t conn_id = sceHttpCreateConnectionWithURL(tmpl_id, url, 0);
+    if (conn_id < 0) {
+        PROXY_LOG("sceHttpCreateConnectionWithURL failed: 0x%08X", conn_id);
+        sceHttpDeleteTemplate(tmpl_id);
+        return false;
+    }
+
+    int32_t req_id = sceHttpCreateRequestWithURL(conn_id, 0, url, 0);
+    if (req_id < 0) {
+        PROXY_LOG("sceHttpCreateRequestWithURL failed: 0x%08X", req_id);
+        sceHttpDeleteConnection(conn_id);
+        sceHttpDeleteTemplate(tmpl_id);
+        return false;
+    }
+
+    int32_t ret = sceHttpSendRequest(req_id, NULL, 0);
+    if (ret < 0) {
+        PROXY_LOG("sceHttpSendRequest failed: 0x%08X", ret);
+        sceHttpDeleteRequest(req_id);
+        sceHttpDeleteConnection(conn_id);
+        sceHttpDeleteTemplate(tmpl_id);
+        return false;
+    }
+
+    int32_t status_code = 0;
+    ret = sceHttpGetStatusCode(req_id, &status_code);
+    if (ret < 0) {
+        PROXY_LOG("sceHttpGetStatusCode failed: 0x%08X", ret);
+        sceHttpDeleteRequest(req_id);
+        sceHttpDeleteConnection(conn_id);
+        sceHttpDeleteTemplate(tmpl_id);
+        return false;
+    }
+
+    PROXY_LOG("HTTP %d", status_code);
+
+    bool success = false;
+    if (status_code == 200) {
+        size_t total_read = 0;
+        while (total_read < buf_size - 1) {
+            int32_t read_size = sceHttpReadData(req_id, response_buf + total_read, buf_size - total_read - 1);
+            if (read_size < 0) {
+                PROXY_LOG("sceHttpReadData failed: 0x%08X", read_size);
+                break;
+            }
+            if (read_size == 0) break;
+            total_read += read_size;
+        }
+        response_buf[total_read] = '\0';
+        PROXY_LOG("Read %zu bytes", total_read);
+        success = total_read > 0;
+    }
+
+    sceHttpDeleteRequest(req_id);
+    sceHttpDeleteConnection(conn_id);
+    sceHttpDeleteTemplate(tmpl_id);
+
+    return success;
+}
+
 // Handle proxy client request
 static void handle_client(OrbisNetId client_sock) {
     char request_buf[BUFFER_SIZE];
@@ -194,26 +276,49 @@ static void handle_client(OrbisNetId client_sock) {
 
     PROXY_LOG("Request: %.100s", request_buf);
 
-    // Parse video ID from URL: GET /videoID HTTP/1.1
-    char* get_line = strstr(request_buf, "GET /");
-    if (!get_line) {
+    char method[8] = {0};
+    char request_path[256] = {0};
+    if (sscanf(request_buf, "%7s %255s", method, request_path) != 2 || strcmp(method, "GET") != 0) {
         const char* err_response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
         sceNetSend(client_sock, err_response, strlen(err_response), 0);
         sceNetSocketClose(client_sock);
         return;
     }
 
-    char video_id[32] = {0};
-    sscanf(get_line, "GET /%31s HTTP", video_id);
+    const char* path = request_path;
+    if (path[0] == '/') {
+        path++;
+    }
 
-    PROXY_LOG("Video ID: %s", video_id);
+    bool is_dislike = false;
+    if (strncmp(path, "dislike/", 8) == 0) {
+        is_dislike = true;
+        path += 8;
+    }
 
-    // Fetch from SponsorBlock
-    char sb_response[4096] = {0};
-    bool success = fetch_sponsorblock(video_id, sb_response, sizeof(sb_response));
+    char video_id[64] = {0};
+    size_t video_len = 0;
+    while (path[video_len] && path[video_len] != '/' && path[video_len] != '?' && path[video_len] != ' ' && video_len < sizeof(video_id) - 1) {
+        video_id[video_len] = path[video_len];
+        video_len++;
+    }
+    video_id[video_len] = '\0';
+
+    if (!video_id[0]) {
+        const char* err_response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        sceNetSend(client_sock, err_response, strlen(err_response), 0);
+        sceNetSocketClose(client_sock);
+        return;
+    }
+
+    PROXY_LOG("Route: %s video=%s", is_dislike ? "dislike" : "sponsorblock", video_id);
+
+    char api_response[4096] = {0};
+    bool success = is_dislike
+        ? fetch_dislikes(video_id, api_response, sizeof(api_response))
+        : fetch_sponsorblock(video_id, api_response, sizeof(api_response));
 
     if (success) {
-        // Send HTTP response
         snprintf(response_buf, sizeof(response_buf),
                  "HTTP/1.1 200 OK\r\n"
                  "Content-Type: application/json\r\n"
@@ -221,15 +326,17 @@ static void handle_client(OrbisNetId client_sock) {
                  "Content-Length: %zu\r\n"
                  "\r\n"
                  "%s",
-                 strlen(sb_response), sb_response);
+                 strlen(api_response), api_response);
     } else {
+        const char* not_found_body = is_dislike ? "{}" : "[]";
         snprintf(response_buf, sizeof(response_buf),
                  "HTTP/1.1 404 Not Found\r\n"
                  "Content-Type: application/json\r\n"
                  "Access-Control-Allow-Origin: *\r\n"
-                 "Content-Length: 2\r\n"
+                 "Content-Length: %zu\r\n"
                  "\r\n"
-                 "[]");
+                 "%s",
+                 strlen(not_found_body), not_found_body);
     }
 
     sceNetSend(client_sock, response_buf, strlen(response_buf), 0);

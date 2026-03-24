@@ -157,25 +157,46 @@
 
     dislikePending[videoId] = true;
 
-    try {
-      var xhr = new XMLHttpRequest();
-      xhr.timeout = 4000;
-      xhr.onload = function() {
-        delete dislikePending[videoId];
-        if (xhr.status !== 200) return;
-        try {
-          var data = origParse(xhr.responseText);
-          dislikeCache[videoId] = data && typeof data.dislikes === 'number' ? data.dislikes : 0;
-          queueDislikeRender();
-        } catch(e) {}
-      };
-      xhr.onerror = function() { delete dislikePending[videoId]; };
-      xhr.ontimeout = function() { delete dislikePending[videoId]; };
-      xhr.open('GET', 'https://returnyoutubedislikeapi.com/votes?videoId=' + encodeURIComponent(videoId), true);
-      xhr.send();
-    } catch(e) {
-      delete dislikePending[videoId];
-    }
+    var tryPort = function(port) {
+      try {
+        var xhr = new XMLHttpRequest();
+        var url = 'http://127.0.0.1:' + port + '/dislike/' + encodeURIComponent(videoId);
+        xhr.timeout = 4000;
+        xhr.onload = function() {
+          delete dislikePending[videoId];
+          if (xhr.status !== 200) return;
+          try {
+            var data = origParse(xhr.responseText);
+            dislikeCache[videoId] = data && typeof data.dislikes === 'number' ? data.dislikes : 0;
+            queueDislikeRender();
+          } catch(e) {}
+        };
+        xhr.onerror = function() {
+          if (port < 4050) {
+            tryPort(port + 1);
+          } else {
+            delete dislikePending[videoId];
+          }
+        };
+        xhr.ontimeout = function() {
+          if (port < 4050) {
+            tryPort(port + 1);
+          } else {
+            delete dislikePending[videoId];
+          }
+        };
+        xhr.open('GET', url, true);
+        xhr.send();
+      } catch(e) {
+        if (port < 4050) {
+          tryPort(port + 1);
+        } else {
+          delete dislikePending[videoId];
+        }
+      }
+    };
+
+    tryPort(4040);
   }
 
   function loadSponsorBlock(videoId) {
