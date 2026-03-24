@@ -213,34 +213,71 @@
   (function() {
     var _ryd_last = '';
 
-    function injectDislikeUI(likes_s, dislikes_s) {
-      var existing = document.getElementById('_ryd_label');
+    // Find the dislike button container and inject count below it
+    // YouTube TV uses ytm-button-renderer or similar elements
+    function findDislikeContainer() {
+      // Try multiple selectors used in YouTube TV / Cobalt
+      var selectors = [
+        'ytm-toggle-button-renderer:nth-of-type(2)',
+        'ytm-button-renderer:nth-of-type(2)',
+        '[aria-label*="islike"]:nth-of-type(2)',
+        '[aria-label*="Don"]',
+        'button:nth-of-type(2)'
+      ];
+      var buttons = document.querySelectorAll('ytm-toggle-button-renderer, ytm-button-renderer, .yt-icon-button');
+      // The dislike button is typically the second button in the action bar
+      if (buttons && buttons.length >= 2) return buttons[1];
+      for (var i = 0; i < selectors.length; i++) {
+        var el = document.querySelector(selectors[i]);
+        if (el) return el;
+      }
+      return null;
+    }
+
+    function injectDislikeUI(dislikes_s) {
+      var existing = document.getElementById('_ryd_dislike_label');
       if (existing) {
-        existing.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
+        existing.textContent = dislikes_s;
         return;
       }
-      var label = document.createElement('div');
-      label.id = '_ryd_label';
-      label.style.cssText = 'position:fixed;bottom:120px;left:50%;transform:translateX(-50%);' +
-        'background:rgba(0,0,0,0.75);color:#fff;font-size:28px;padding:10px 24px;' +
-        'border-radius:12px;z-index:99999;pointer-events:none;text-align:center;';
-      label.textContent = '\uD83D\uDC4D ' + likes_s + '  \uD83D\uDC4E ' + dislikes_s;
-      document.body.appendChild(label);
+
+      var tryInject = function(attempt) {
+        var container = findDislikeContainer();
+        if (!container) {
+          if (attempt < 15) setTimeout(function(){ tryInject(attempt + 1); }, 400);
+          return;
+        }
+        // Check if parent has a label below it (like the like button)
+        var parent = container.parentElement || container;
+        var label = document.createElement('div');
+        label.id = '_ryd_dislike_label';
+        // Match YouTube TV's like count style as closely as possible
+        label.style.cssText = 'color:#fff;font-size:0.75em;text-align:center;margin-top:2px;' +
+          'font-family:inherit;pointer-events:none;white-space:nowrap;';
+        label.textContent = dislikes_s;
+        // Insert after the container, same level as how like count appears
+        if (parent.nextSibling) {
+          parent.parentNode.insertBefore(label, parent.nextSibling);
+        } else {
+          parent.parentNode.appendChild(label);
+        }
+      };
+      tryInject(0);
     }
 
     function fetchRYD(videoId) {
       if (!videoId || videoId === _ryd_last) return;
       _ryd_last = videoId;
-      var el = document.getElementById('_ryd_label');
+      var el = document.getElementById('_ryd_dislike_label');
       if (el) el.remove();
       try {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', 'http://127.0.0.1:4040/ryd?videoId=' + videoId, true);
-        xhr.timeout = 2000;
+        xhr.timeout = 3000;
         xhr.onload = function() {
           try {
             var d = origParse(xhr.responseText);
-            if (d.l !== undefined && d.d !== undefined) injectDislikeUI(d.l, d.d);
+            if (d.d !== undefined) injectDislikeUI(d.d);
           } catch(e) {}
         };
         xhr.send();
