@@ -38,7 +38,7 @@ extern "C" void mh_log(const char* fmt, ...);
 
 static bool g_proxy_running = false;
 static pthread_t g_proxy_thread;
-static int32_t g_http_ctx_id = -1;
+int32_t g_http_ctx_id = -1;
 static int32_t g_ssl_ctx_id = -1;
 static int32_t g_net_pool_id = -1;
 static OrbisNetId g_server_sock = -1;

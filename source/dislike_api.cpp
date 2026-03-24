@@ -70,7 +70,6 @@ bool ryd_fetch(const char* video_id, DislikeData* out) {
     if (tmpl < 0) return false;
 
     sceHttpsSetSslCallback(tmpl, ssl_callback_ryd, nullptr);
-    sceHttpSetAutoRedirect(tmpl, 1);
     sceHttpSetRecvTimeOut(tmpl, 2 * 1000 * 1000);
 
     int32_t conn = sceHttpCreateConnectionWithURL(tmpl, url, 0);
